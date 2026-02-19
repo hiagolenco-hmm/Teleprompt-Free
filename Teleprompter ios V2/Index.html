@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <title>Teleprompter Outro Nível - Final</title>
+    <style>
+        :root { --bg: #000; --panel: #1a1a1a; --text: #fff; --accent: #2ecc71; --danger: #e74c3c; }
+        
+        body, html { 
+            margin: 0; padding: 0; height: 100%; 
+            background: var(--bg); color: var(--text); 
+            font-family: -apple-system, sans-serif; overflow: hidden; 
+        }
+
+        /* Sidebar Lateral */
+        #sidebar {
+            position: fixed; left: 0; top: 0; bottom: 0;
+            width: 300px; background: var(--panel);
+            transform: translateX(-100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 2000; display: flex; flex-direction: column;
+            border-right: 1px solid #333;
+        }
+        #sidebar.open { transform: translateX(0); }
+
+        /* Botão Sanduíche / X que move com a aba */
+        #menu-toggle {
+            position: absolute; right: -50px; top: 10px;
+            width: 45px; height: 45px;
+            background: var(--panel); color: white; border: 1px solid #333;
+            border-left: none; border-radius: 0 8px 8px 0;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; z-index: 2100;
+        }
+
+        .sidebar-header { padding: 20px; font-weight: bold; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
+        #note-list { flex-grow: 1; overflow-y: auto; list-style: none; padding: 0; margin: 0; }
+        .note-item { padding: 15px; border-bottom: 1px solid #222; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .note-item.active { border-left: 4px solid var(--accent); background: #222; }
+        .note-name { flex-grow: 1; }
+        .delete-btn { color: var(--danger); font-size: 20px; padding: 5px 10px; font-weight: bold; }
+
+        /* Painel de Controles Superior */
+        #controls {
+            position: fixed; top: 0; width: 100%; background: rgba(20,20,20,0.95);
+            padding: 15px; z-index: 1000; display: none; flex-direction: column; gap: 10px;
+            transition: transform 0.4s; border-bottom: 1px solid #333;
+        }
+        #controls.visible { display: flex; }
+        #controls.hidden { transform: translateY(-100%); }
+
+        textarea { width: 90%; height: 60px; background: #333; color: #fff; border: none; padding: 10px; border-radius: 8px; align-self: center; resize: none; font-size: 16px; outline: none; }
+
+        /* Área do Prompter */
+        #viewport { width: 100%; height: 100vh; position: relative; display: none; }
+        #viewport.visible { display: block; }
+        #prompter-content {
+            position: absolute; width: 85%; left: 7.5%; text-align: center;
+            white-space: pre-wrap; transform-origin: center top; will-change: transform;
+        }
+
+        #marker { position: fixed; top: 50%; left: 0; width: 100%; height: 2px; background: rgba(46, 204, 113, 0.3); z-index: 50; pointer-events: none; }
+        .empty-state { height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; color: #555; text-align: center; }
+
+        .row { display: flex; justify-content: space-around; width: 100%; align-items: center; }
+        .btn { padding: 10px 15px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        .btn-play { background: var(--accent); color: white; }
+        input[type="range"] { width: 100px; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <button id="menu-toggle" onclick="toggleSidebar()">☰</button>
+    <div class="sidebar-header">
+        ROTEIROS
+        <button class="btn btn-play" onclick="createNewNote()">+</button>
+    </div>
+    <ul id="note-list"></ul>
+</div>
+
+<div id="empty-msg" class="empty-state">
+    <h2>Nenhum roteiro carregado</h2>
+    <p>Clique em ☰ e crie um roteiro para começar.</p>
+</div>
+
+<div id="controls">
+    <textarea id="input-text" oninput="saveCurrentNote()"></textarea>
+    <div class="row">
+        <label style="font-size: 11px;">VELOCIDADE <br><input type="range" id="speed-slider" min="0" max="15" step="0.5" value="2"></label>
+        <label style="font-size: 11px;">FONTE <br><input type="range" id="font-size" min="20" max="150" value="60"></label>
+    </div>
+    <div class="row">
+        <button class="btn btn-play" onclick="togglePlay()" id="btn-play">AUTO-PLAY</button>
+        <button class="btn" onclick="resetPos()" style="background:#555; color:#fff">RESET (R)</button>
+        <label style="font-size: 12px;"><input type="checkbox" id="mirror-check"> ESPELHAR</label>
+    </div>
+</div>
+
+<div id="marker"></div>
+
+<div id="viewport" onclick="toggleInterface()">
+    <div id="prompter-content"></div>
+</div>
+
+<script>
+    const content = document.getElementById('prompter-content');
+    const inputText = document.getElementById('input-text');
+    const speedSlider = document.getElementById('speed-slider');
+    const fontSizeInput = document.getElementById('font-size');
+    const sidebar = document.getElementById('sidebar');
+    const toggleBtn = document.getElementById('menu-toggle');
+    const controls = document.getElementById('controls');
+    const viewport = document.getElementById('viewport');
+    const emptyMsg = document.getElementById('empty-msg');
+
+    let posY = window.innerHeight * 0.5;
+    let isPlaying = false;
+    let activeNoteId = null;
+    let notes = JSON.parse(localStorage.getItem('outronivel_notes')) || [];
+
+    function toggleSidebar() {
+        const isOpen = sidebar.classList.toggle('open');
+        toggleBtn.innerText = isOpen ? "✕" : "☰";
+    }
+
+    function updateAppVisibility() {
+        if (activeNoteId) {
+            controls.classList.add('visible');
+            viewport.classList.add('visible');
+            emptyMsg.style.display = 'none';
+        } else {
+            controls.classList.remove('visible');
+            viewport.classList.remove('visible');
+            emptyMsg.style.display = 'flex';
+        }
+    }
+
+    function renderNotes() {
+        const list = document.getElementById('note-list');
+        list.innerHTML = '';
+        notes.forEach(note => {
+            const li = document.createElement('li');
+            li.className = `note-item ${note.id === activeNoteId ? 'active' : ''}`;
+            li.innerHTML = `
+                <span class="note-name" onclick="loadNote(${note.id})">${note.title}</span>
+                <span class="delete-btn" onclick="deleteNote(event, ${note.id})">×</span>
+            `;
+            list.appendChild(li);
+        });
+        updateAppVisibility();
+    }
+
+    function createNewNote() {
+        const title = prompt("Nome do roteiro:");
+        if (!title) return;
+        const newNote = { id: Date.now(), title: title, body: "" };
+        notes.unshift(newNote);
+        localStorage.setItem('outronivel_notes', JSON.stringify(notes));
+        renderNotes();
+        loadNote(newNote.id);
+    }
+
+    function loadNote(id) {
+        const note = notes.find(n => n.id === id);
+        if (note) {
+            activeNoteId = id;
+            inputText.value = note.body;
+            if (sidebar.classList.contains('open')) toggleSidebar();
+            resetPos();
+            renderNotes();
+        }
+    }
+
+    function saveCurrentNote() {
+        if (!activeNoteId) return;
+        const note = notes.find(n => n.id === activeNoteId);
+        if (note) { note.body = inputText.value; localStorage.setItem('outronivel_notes', JSON.stringify(notes)); }
+    }
+
+    function deleteNote(event, id) {
+        event.stopPropagation();
+        if (confirm("Excluir roteiro?")) {
+            notes = notes.filter(n => n.id !== id);
+            if (activeNoteId === id) activeNoteId = null;
+            localStorage.setItem('outronivel_notes', JSON.stringify(notes));
+            renderNotes();
+        }
+    }
+
+    // --- LOOP E CONTROLES (Teclado + Gamepad) ---
+    function update() {
+        const gamepads = navigator.getGamepads();
+        if (gamepads[0]) {
+            const gp = gamepads[0];
+            if (gp.buttons[0].pressed && activeNoteId && !this.db) { togglePlay(); this.db=true; setTimeout(()=>this.db=false,300); }
+            if (Math.abs(gp.axes[1]) > 0.1 && activeNoteId) {
+                posY -= gp.axes[1] * 15;
+                isPlaying = false;
+                controls.classList.add('hidden');
+            }
+        }
+        if (isPlaying && activeNoteId) posY -= parseFloat(speedSlider.value);
+        render();
+        requestAnimationFrame(update);
+    }
+
+    function render() {
+        if (!activeNoteId) return;
+        const mirror = document.getElementById('mirror-check').checked ? "scaleX(-1)" : "";
+        content.style.transform = `translateY(${posY}px) ${mirror}`;
+        content.style.fontSize = fontSizeInput.value + "px";
+        content.innerText = inputText.value;
+    }
+
+    function toggleInterface() { if(activeNoteId) controls.classList.toggle('hidden'); }
+    function togglePlay() { 
+        if(!activeNoteId) return;
+        isPlaying = !isPlaying; 
+        if(isPlaying) controls.classList.add('hidden'); 
+        document.getElementById('btn-play').innerText = isPlaying ? "PAUSAR" : "AUTO-PLAY";
+    }
+    function resetPos() { isPlaying = false; posY = window.innerHeight * 0.5; controls.classList.remove('hidden'); }
+
+    // Comandos de Teclado (Setas e Espaço)
+    window.addEventListener('keydown', (e) => {
+        if (document.activeElement === inputText || !activeNoteId) return;
+        if (e.code === "ArrowUp") { posY += 40; isPlaying = false; controls.classList.add('hidden'); }
+        if (e.code === "ArrowDown") { posY -= 40; isPlaying = false; controls.classList.add('hidden'); }
+        if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+        if (e.code === "KeyR") { resetPos(); }
+    });
+
+    renderNotes();
+    requestAnimationFrame(update);
+</script>
+</body>
+</html>
